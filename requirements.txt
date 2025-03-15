@@ -1,0 +1,16 @@
+# Core dependencies
+networkx>=3.1
+numpy>=1.26.0
+pandas>=2.0.3
+requests>=2.31.0
+
+# Visualization
+plotly>=5.15.0
+dash>=2.11.1
+dash-bootstrap-components>=1.4.1
+
+# Wikipedia API
+wikipedia-api>=0.5.8
+
+# Utilities
+tqdm>=4.65.0
