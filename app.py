@@ -4,6 +4,8 @@ Main application file for the Wikipedia 3D Graph Visualization tool.
 
 import os
 import dash
+import threading
+import time
 from dash import dcc, html, Input, Output, State, callback
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
@@ -12,6 +14,7 @@ import networkx as nx
 from modules.wiki_api import WikipediaDataFetcher
 from modules.graph_utils import WikiGraph
 from modules.visualization import GraphVisualizer
+from modules.wiki_downloader import WikiDownloader
 
 # Initialize the app
 app = dash.Dash(
@@ -28,6 +31,8 @@ server = app.server
 wiki_fetcher = WikipediaDataFetcher()
 wiki_graph = None
 graph_viz = None
+wiki_downloader = WikiDownloader(base_dir="data/wiki_dump")
+download_thread = None
 
 # Check if we have sample data
 sample_data_exists = os.path.exists(os.path.join(wiki_fetcher.data_dir, "wiki_graph_synthetic_nodes.json"))
@@ -113,6 +118,72 @@ app.layout = dbc.Container([
         dbc.Col([
             html.Div(id="status-message", className="alert alert-info"),
             html.Div(id="graph-info"),
+        ], width=12),
+    ]),
+    
+    # Wikipedia Download section
+    dbc.Row([
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader([
+                    html.H4("Wikipedia Mass Downloader", className="d-inline"),
+                    dbc.Badge("Multithreaded", color="primary", className="ms-2"),
+                ]),
+                dbc.CardBody([
+                    dbc.Row([
+                        dbc.Col([
+                            html.H5("Download Parameters"),
+                            dbc.InputGroup([
+                                dbc.InputGroupText("Max Articles"),
+                                dbc.Input(id="download-max-articles", type="number", value=1000, min=100, max=100000),
+                            ], className="mb-2"),
+                            dbc.InputGroup([
+                                dbc.InputGroupText("Thread Count"),
+                                dbc.Input(id="download-threads", type="number", value=10, min=1, max=20),
+                            ], className="mb-2"),
+                            dbc.InputGroup([
+                                dbc.InputGroupText("Output Directory"),
+                                dbc.Input(id="download-dir", type="text", value="data/wiki_dump", disabled=True),
+                            ], className="mb-2"),
+                        ], width=6),
+                        dbc.Col([
+                            html.H5("Starting Categories"),
+                            dbc.Textarea(
+                                id="download-categories",
+                                value="Category:Science\nCategory:Technology\nCategory:Arts",
+                                placeholder="Enter category names, one per line",
+                                style={"height": "120px"},
+                            ),
+                            html.Div([
+                                dbc.Button(
+                                    "Start Massive Download",
+                                    id="start-download-button",
+                                    color="danger",
+                                    className="mt-3",
+                                ),
+                                dbc.Button(
+                                    "Stop Download",
+                                    id="stop-download-button",
+                                    color="warning",
+                                    className="mt-3 ms-2",
+                                    disabled=True,
+                                ),
+                            ]),
+                        ], width=6),
+                    ]),
+                    
+                    # Download progress section
+                    dbc.Row([
+                        dbc.Col([
+                            html.Div([
+                                html.H5("Download Progress", className="mt-3"),
+                                dbc.Progress(id="download-progress", value=0, className="mb-2"),
+                                html.Div(id="download-stats"),
+                            ], id="download-progress-container", style={"display": "none"}),
+                        ], width=12),
+                    ]),
+                ]),
+            ], className="mb-3"),
         ], width=12),
     ]),
     
@@ -261,6 +332,12 @@ app.layout = dbc.Container([
         interval=500,  # in milliseconds
         n_intervals=0,
         max_intervals=1,  # Run only once
+    ),
+    dcc.Interval(
+        id="download-update-interval",
+        interval=1000,  # in milliseconds
+        n_intervals=0,
+        disabled=True,
     ),
     
     # Footer
@@ -461,6 +538,136 @@ def update_graph_visualization(graph_data, viz_clicks, filter_clicks, path_click
     graph_info = html.Div(info_elements, className="mb-3")
     
     return figure, graph_info, node_options, node_options, category_options
+
+# Wikipedia download callbacks
+
+@app.callback(
+    [Output("download-update-interval", "disabled"),
+     Output("start-download-button", "disabled"),
+     Output("stop-download-button", "disabled"),
+     Output("download-progress-container", "style")],
+    [Input("start-download-button", "n_clicks"),
+     Input("stop-download-button", "n_clicks")],
+    [State("download-max-articles", "value"),
+     State("download-threads", "value"),
+     State("download-categories", "value")],
+    prevent_initial_call=True
+)
+def handle_download_buttons(start_clicks, stop_clicks, max_articles, thread_count, categories_text):
+    """Start or stop the Wikipedia download process."""
+    global wiki_downloader, download_thread
+    
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return True, False, True, {"display": "none"}
+    
+    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    
+    if button_id == "start-download-button":
+        # Extract categories from text area
+        categories = [line.strip() for line in categories_text.split("\n") if line.strip()]
+        
+        if not categories:
+            categories = wiki_downloader.get_top_level_categories()[:5]  # Use a few top categories
+        
+        # Configure downloader
+        wiki_downloader = WikiDownloader(
+            base_dir="data/wiki_dump",
+            max_threads=thread_count,
+            max_articles_per_category=50,
+        )
+        
+        # Create and start the download thread
+        def download_worker():
+            wiki_downloader.start_download(
+                max_downloads=max_articles,
+                initial_categories=categories,
+            )
+        
+        download_thread = threading.Thread(target=download_worker)
+        download_thread.daemon = True
+        download_thread.start()
+        
+        # Enable progress monitoring and disable start button
+        return False, True, False, {"display": "block"}
+    
+    elif button_id == "stop-download-button":
+        # Stop the download process
+        if wiki_downloader.is_downloading():
+            wiki_downloader.stop_download()
+        
+        # Disable progress monitoring and enable start button
+        return True, False, True, {"display": "none"}
+    
+    return True, False, True, {"display": "none"}
+
+@app.callback(
+    [Output("download-progress", "value"),
+     Output("download-stats", "children")],
+    [Input("download-update-interval", "n_intervals")],
+    prevent_initial_call=True
+)
+def update_download_progress(n_intervals):
+    """Update the download progress display."""
+    global wiki_downloader
+    
+    # Get current stats
+    stats = wiki_downloader.get_download_stats()
+    
+    # Calculate progress percentage
+    if stats["total_articles"] > 0:
+        progress = int(100 * stats["completed_articles"] / stats["total_articles"])
+    else:
+        progress = 0
+    
+    # Format elapsed time
+    if stats["elapsed_time"] > 0:
+        hours, remainder = divmod(stats["elapsed_time"], 3600)
+        minutes, seconds = divmod(remainder, 60)
+        elapsed_str = f"{int(hours)}h {int(minutes)}m {int(seconds)}s"
+    else:
+        elapsed_str = "0s"
+    
+    # Prepare stats display
+    stats_elements = [
+        html.Div([
+            html.Strong("Articles: "),
+            html.Span(f"Downloaded: {stats['articles_downloaded']} / Queued: {stats['queued_articles']} / Failed: {stats['failed_articles']}"),
+        ]),
+        html.Div([
+            html.Strong("Categories: "),
+            html.Span(f"Processed: {stats['categories_processed']} / Queued: {stats['queued_categories']}"),
+        ]),
+        html.Div([
+            html.Strong("Data Size: "),
+            html.Span(f"{stats['total_size_kb'] / 1024:.2f} MB"),
+        ]),
+        html.Div([
+            html.Strong("Elapsed Time: "),
+            html.Span(elapsed_str),
+        ]),
+    ]
+    
+    # Add rate information if available
+    if stats["elapsed_time"] > 0 and stats["articles_downloaded"] > 0:
+        rate = stats["articles_downloaded"] / stats["elapsed_time"]
+        stats_elements.append(html.Div([
+            html.Strong("Download Rate: "),
+            html.Span(f"{rate:.2f} articles/second"),
+        ]))
+        
+        # Add estimated time remaining
+        if progress > 0 and stats["total_articles"] > 0:
+            remaining_articles = stats["total_articles"] - stats["completed_articles"]
+            remaining_time = remaining_articles / rate
+            hours, remainder = divmod(remaining_time, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            stats_elements.append(html.Div([
+                html.Strong("Estimated Time Remaining: "),
+                html.Span(f"{int(hours)}h {int(minutes)}m {int(seconds)}s"),
+            ]))
+    
+    return progress, html.Div(stats_elements, className="download-stats")
 
 # Run the app
 if __name__ == '__main__':
