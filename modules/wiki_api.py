@@ -10,7 +10,7 @@ from tqdm import tqdm
 import random
 import json
 import os
-from typing import Dict, List, Set, Tuple, Optional
+from typing import Dict, List, Set, Tuple, Optional, Any
 
 class WikipediaDataFetcher:
     """Class to handle data acquisition from Wikipedia API."""
@@ -24,7 +24,7 @@ class WikipediaDataFetcher:
         """
         self.wiki = wikipediaapi.Wikipedia(
             language=language,
-            user_agent="WikiGraphVisualizer/1.0 (https://github.com/yourusername/wiki-graph-viz)"
+            user_agent="WikiGraphVisualizer/1.0 (https://github.com/jrgochan/wiki)"
         )
         self.session = requests.Session()
         # Base URL for the MediaWiki API
@@ -322,3 +322,50 @@ class WikipediaDataFetcher:
         self.save_graph_to_file(G, "wiki_graph_synthetic")
         
         return G
+    
+    def search_wikipedia(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search Wikipedia for articles matching the query.
+        
+        Args:
+            query: Search query string
+            limit: Maximum number of results to return
+            
+        Returns:
+            List of dictionaries with article data (title, snippet, etc.)
+        """
+        if not query or len(query.strip()) == 0:
+            return []
+            
+        params = {
+            "action": "query",
+            "format": "json",
+            "list": "search",
+            "srsearch": query,
+            "srlimit": limit,
+            "srinfo": "snippet",
+            "srprop": "snippet|titlesnippet|sectiontitle",
+        }
+        
+        try:
+            response = self.session.get(self.api_url, params=params)
+            data = response.json()
+            
+            results = []
+            if "query" in data and "search" in data["query"]:
+                for item in data["query"]["search"]:
+                    # Clean up the snippet (remove HTML tags)
+                    snippet = item.get("snippet", "")
+                    snippet = snippet.replace("<span class=\"searchmatch\">", "")
+                    snippet = snippet.replace("</span>", "")
+                    
+                    results.append({
+                        "title": item.get("title", ""),
+                        "snippet": snippet,
+                        "pageid": item.get("pageid", 0),
+                    })
+            
+            return results
+        except Exception as e:
+            print(f"Error searching Wikipedia: {e}")
+            return []

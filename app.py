@@ -6,6 +6,7 @@ import os
 import dash
 import threading
 import time
+import json
 from dash import dcc, html, Input, Output, State, callback
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
@@ -63,6 +64,59 @@ app.layout = dbc.Container([
             html.H1("Wikipedia 3D Graph Visualizer", className="mt-4 mb-4"),
             html.P("Visualize and explore connections between Wikipedia articles in 3D space"),
         ], width=12)
+    ]),
+    
+    # Search bar section
+    dbc.Row([
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader("Wikipedia Article Search"),
+                dbc.CardBody([
+                    dbc.Row([
+                        dbc.Col([
+                            dbc.InputGroup([
+                                dbc.Input(
+                                    id="search-input",
+                                    placeholder="Enter search terms...",
+                                    type="text",
+                                    debounce=True,
+                                    value="",
+                                ),
+                                dbc.Button(
+                                    "Search",
+                                    id="search-button", 
+                                    color="primary",
+                                ),
+                            ]),
+                        ], width=12),
+                    ]),
+                    dbc.Row([
+                        dbc.Col([
+                            html.Div(
+                                id="search-results-container",
+                                className="mt-3",
+                                style={"maxHeight": "300px", "overflowY": "auto"},
+                                children=[
+                                    html.P("Enter a search term to find Wikipedia articles", className="text-muted")
+                                ]
+                            ),
+                        ], width=12),
+                    ]),
+                    dbc.Row([
+                        dbc.Col([
+                            dbc.Button(
+                                "Build Graph from Selected Article",
+                                id="build-from-search-button",
+                                color="success",
+                                className="mt-3",
+                                disabled=True,
+                            ),
+                            dbc.FormText("Select a search result and click to build a graph from that article and all its links"),
+                        ], width=12),
+                    ]),
+                ]),
+            ], className="mb-3"),
+        ], width=12),
     ]),
     
     # Data acquisition section
@@ -538,6 +592,79 @@ def update_graph_visualization(graph_data, viz_clicks, filter_clicks, path_click
     graph_info = html.Div(info_elements, className="mb-3")
     
     return figure, graph_info, node_options, node_options, category_options
+
+# Wikipedia search callbacks
+
+@app.callback(
+    [Output("search-results-container", "children"),
+     Output("build-from-search-button", "disabled")],
+    [Input("search-button", "n_clicks"),
+     Input("search-input", "value")],
+    prevent_initial_call=True
+)
+def search_wikipedia_articles(n_clicks, search_query):
+    """Search Wikipedia and display results."""
+    if not search_query or len(search_query.strip()) == 0:
+        return [html.P("Enter a search term to find Wikipedia articles", className="text-muted")], True
+    
+    # Perform the search
+    search_results = wiki_fetcher.search_wikipedia(search_query)
+    
+    if not search_results:
+        return [html.P(f"No results found for '{search_query}'", className="text-muted")], True
+    
+    # Create result items
+    result_items = []
+    for i, result in enumerate(search_results):
+        item = dbc.Card(
+            dbc.CardBody([
+                html.Div([
+                    dbc.RadioButton(
+                        id={"type": "search-result-radio", "index": i},
+                        className="form-check-input me-2",
+                        value=result["title"],
+                    ),
+                    html.H5(result["title"], className="d-inline"),
+                ]),
+                html.P(result["snippet"], className="mt-2"),
+            ]),
+            className="mb-2",
+            id={"type": "search-result-card", "index": i}
+        )
+        result_items.append(item)
+    
+    # Store the results in a hidden div
+    result_items.append(html.Div(
+        [html.P(json.dumps(search_results), style={"display": "none"})],
+        id="search-results-data"
+    ))
+    
+    return result_items, False  # Enable build button if results are found
+
+@app.callback(
+    Output("seed-articles", "value"),
+    [Input("build-from-search-button", "n_clicks")],
+    [State({"type": "search-result-radio", "index": dash.ALL}, "value"),
+     State({"type": "search-result-radio", "index": dash.ALL}, "checked")],
+    prevent_initial_call=True
+)
+def set_selected_article_as_seed(n_clicks, values, checked_states):
+    """Set the selected search result as the seed article."""
+    if not n_clicks or not values:
+        raise dash.exceptions.PreventUpdate()
+    
+    # Find the selected article
+    selected_article = None
+    for i, checked in enumerate(checked_states):
+        if checked:
+            selected_article = values[i]
+            break
+    
+    if not selected_article:
+        # If no radio button is explicitly checked, use the first one
+        selected_article = values[0]
+    
+    return selected_article
 
 # Wikipedia download callbacks
 
