@@ -380,7 +380,7 @@ class GraphVisualizer:
             mode='lines',
             line=dict(
                 color=trace_data['edges']['colors'],
-                width=trace_data['edges']['widths'],
+                width=self.visual_settings['edge_width'],  # Use a single width value instead of a list
             ),
             hoverinfo='text',
             text=trace_data['edges']['text'],
